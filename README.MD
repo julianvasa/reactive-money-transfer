@@ -302,5 +302,7 @@ Example response:
 
  - Call https://api.exchangeratesapi.io to get the latest currency convertions rates when initiating a Transaction
  - Accounts and Transactions are stored in 2 LinkedHashMaps to keep it simple. Possible future integration with a NoSQL database (ex. MongoDb, Couchbase, Cassandra). https://vertx.io/docs/#data_access
+ - Add an audit data store (or database table) to keep track all operations performed on accounts / transactions
  - Split the main Verticle in 2 Verticles: Accounts and Transactions...communicate through a Service Bus
  - or ...maybe change completely to a microservices architecture based on Verticles
+ 
