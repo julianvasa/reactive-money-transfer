@@ -1,6 +1,5 @@
 # Reactive Money Transfer Application
 
-## About
 A RESTful API that allows transfer money from one Bank Account to another in any currency.
 
 It uses two entities:
