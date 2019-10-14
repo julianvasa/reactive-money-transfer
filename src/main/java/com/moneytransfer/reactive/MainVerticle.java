@@ -2,26 +2,21 @@ package com.moneytransfer.reactive;
 
 import com.moneytransfer.reactive.enums.AccountOperation;
 import com.moneytransfer.reactive.enums.TransactionStatus;
+import com.moneytransfer.reactive.handlers.AccountsHandler;
+import com.moneytransfer.reactive.handlers.impl.AccountsHandlerImpl;
+import com.moneytransfer.reactive.handlers.TransactionsHandler;
+import com.moneytransfer.reactive.handlers.impl.TransactionsHandlerImpl;
 import com.moneytransfer.reactive.model.Account;
 import com.moneytransfer.reactive.model.Transaction;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Promise;
-import io.vertx.core.http.HttpHeaders;
-import io.vertx.core.json.Json;
 import io.vertx.ext.web.Router;
-import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BodyHandler;
 
 import java.math.BigDecimal;
 import java.util.Currency;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Predicate;
-import java.util.stream.Collectors;
-
-import static com.moneytransfer.reactive.exception.Exception.error;
 
 /**
  * MainVerticle
@@ -29,7 +24,6 @@ import static com.moneytransfer.reactive.exception.Exception.error;
 public class MainVerticle extends AbstractVerticle {
     private final Map<Integer, Account> accounts = new LinkedHashMap<>();
     private final Map<Integer, Transaction> transactions = new LinkedHashMap<>();
-    private final String JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 
     @Override
     public void start(Promise<Void> startPromise) {
@@ -42,30 +36,33 @@ public class MainVerticle extends AbstractVerticle {
         /* Enables the reading of the request body for all routes under /transactions */
         router.route("/transactions").handler(BodyHandler.create());
 
+        AccountsHandler accountsHandler = new AccountsHandlerImpl();
+        TransactionsHandler transactionsHandler = new TransactionsHandlerImpl();
+
         /* Validate account number (id) before proceeding with any other endpoint which needs an id as a parameter */
-        router.route("/accounts/:id").handler(this::validateAccountNumber);
+        router.route("/accounts/:id").handler(accountsHandler::parseAccountNumber);
         /* Get all accounts */
-        router.get("/accounts").handler(this::getAllAccounts);
+        router.get("/accounts").handler(routingContext -> accountsHandler.getAllAccounts(routingContext, accounts));
         /* Post a new account */
-        router.post("/accounts").handler(this::newAccount);
+        router.post("/accounts").handler(routingContext -> accountsHandler.newAccount(routingContext, accounts));
         /* Get account by Id */
-        router.get("/accounts/:id").handler(this::getAccount);
+        router.get("/accounts/:id").handler(routingContext -> accountsHandler.getAccount(routingContext, accounts));
         /* Delete an account */
-        router.delete("/accounts/:id").handler(this::deleteAccount);
+        router.delete("/accounts/:id").handler(routingContext -> accountsHandler.deleteAccount(routingContext, accounts));
         /* Deposit or Withdraw */
         router.put("/accounts/:id/deposit/:amount").handler(
-            routingContext -> this.accountOperation(routingContext, AccountOperation.DEPOSIT));
+            routingContext -> accountsHandler.accountOperation(routingContext, AccountOperation.DEPOSIT, accounts));
         router.put("/accounts/:id/withdraw/:amount").handler(
-            routingContext -> this.accountOperation(routingContext, AccountOperation.WITHDRAW));
+            routingContext -> accountsHandler.accountOperation(routingContext, AccountOperation.WITHDRAW, accounts));
 
         /* Get all transactions */
-        router.get("/transactions").handler(this::getAllTransactions);
+        router.get("/transactions").handler(routingContext -> transactionsHandler.getAllTransactions(routingContext,transactions));
         /* Post a new transaction */
-        router.post("/transactions").handler(this::newTransaction);
+        router.post("/transactions").handler(routingContext -> transactionsHandler.newTransaction(routingContext,accounts,transactions));
         /* Get transaction by Id */
-        router.get("/transactions/:id").handler(this::getTransaction);
+        router.get("/transactions/:id").handler(routingContext -> transactionsHandler.getTransaction(routingContext,transactions));
         /* Get all transactions of a certain account identified with the provided Id */
-        router.get("/transactions/account/:id").handler(this::getTransactionOfAccount);
+        router.get("/transactions/account/:id").handler(routingContext -> transactionsHandler.getTransactionOfAccount(routingContext,accounts,transactions));
 
         /* Just a simple endpoint to check whether the server is responding or not */
         router.get("/health").handler(rc -> rc.response().end("OK"));
@@ -83,191 +80,6 @@ public class MainVerticle extends AbstractVerticle {
                     }
                 }
             );
-    }
-
-    /* Validate account number (id) before proceeding with any other endpoint which needs an id as a parameter */
-    private void validateAccountNumber(RoutingContext routingContext) {
-        try {
-            Integer.parseInt(routingContext.pathParam("id"));
-            routingContext.next();
-        } catch (NumberFormatException exception) {
-            error(routingContext, 400, "Invalid Account Number: " + exception.getCause());
-        }
-    }
-
-    /* Get all accounts */
-    private void getAllAccounts(RoutingContext routingContext) {
-        routingContext.response()
-            .putHeader(HttpHeaders.CONTENT_TYPE, JSON_CONTENT_TYPE)
-            .setStatusCode(200)
-            .end(Json.encodePrettily(accounts.values()));
-    }
-
-    /* Get account by Id */
-    private void getAccount(RoutingContext routingContext) {
-        final String id = routingContext.request().getParam("id");
-        final Integer accountNumber = Integer.valueOf(id);
-        Account account = accounts.get(accountNumber);
-        if (account == null) {
-            error(routingContext, 404, "Account Number not found in the DB: " + id);
-        }
-        else {
-            sendAccountResponse(routingContext, account, 200);
-        }
-    }
-
-    /* Post a new account */
-    private void newAccount(RoutingContext routingContext) {
-        try {
-            final Account account = Json.decodeValue(routingContext.getBodyAsString(), Account.class);
-
-            if (accounts.containsKey(account.getId())) {
-                error(routingContext, 409, "Account number already exists in the DB!");
-            }
-            accounts.put(account.getId(), account);
-            sendAccountResponse(routingContext, account, 201);
-        } catch (RuntimeException exception) {
-            error(routingContext, 415, "Unable to parse Account JSON request body! Cause: " + exception.getCause());
-        }
-    }
-
-    /* Delete an account */
-    private void deleteAccount(RoutingContext routingContext) {
-        String id = routingContext.request().getParam("id");
-        if (accounts.get(Integer.valueOf(id)) == null) {
-            error(routingContext, 404, "Account Number not found in the DB: " + id);
-        }
-        else {
-            Integer accountNumber = Integer.valueOf(id);
-            accounts.remove(accountNumber);
-            error(routingContext, 204, "Account deleted: " + accountNumber);
-        }
-    }
-
-    /* Deposit or Withdraw */
-    private void accountOperation(RoutingContext routingContext, AccountOperation operation) {
-        final String id = routingContext.pathParam("id");
-        final String amountParam = routingContext.pathParam("amount");
-        final Integer accountNumber = Integer.valueOf(id);
-        final BigDecimal amount = BigDecimal.valueOf(Long.parseLong(amountParam));
-
-        if (accounts.get(accountNumber) == null) {
-            error(routingContext, 404, "Account Number not found in the DB: " + id);
-        }
-        else {
-            Account account = accounts.get(accountNumber);
-            if (operation.equals(AccountOperation.DEPOSIT)) {
-                account.deposit(amount);
-                sendAccountResponse(routingContext, account, 200);
-            }
-            else if (operation.equals(AccountOperation.WITHDRAW)) {
-                if (account.getBalance().compareTo(amount) < 0) {
-                    error(routingContext, 403, "Account balance < amount: s" + amount);
-                }
-                account.withdraw(amount);
-                sendAccountResponse(routingContext, account, 200);
-            }
-        }
-    }
-
-
-    /* Get the transactions for a certain account (source or destination account) */
-    private void getTransactionOfAccount(RoutingContext routingContext) {
-        final String id = routingContext.request().getParam("id");
-        final Integer accountNumber = Integer.parseInt(id);
-        Account fromAccount = accounts.get(accountNumber);
-        if (fromAccount == null) {
-            error(routingContext, 404, "Source Account does not exist!");
-        }
-        else {
-            Predicate<Transaction> isSourceAccount = e -> e.getFromAccount() == accountNumber;
-            Predicate<Transaction> isDestinationAccount = e -> e.getToAccount() == accountNumber;
-
-            List<Transaction> transactionList = transactions
-                .values()
-                .stream()
-                .filter(isSourceAccount.or(isDestinationAccount))
-                .collect(Collectors.toUnmodifiableList());
-
-            routingContext.response()
-                .putHeader(HttpHeaders.CONTENT_TYPE, JSON_CONTENT_TYPE)
-                .setStatusCode(200)
-                .end(Json.encodePrettily(transactionList));
-        }
-    }
-
-    /* Get transaction by Id */
-    private void getTransaction(RoutingContext routingContext) {
-        final String id = routingContext.request().getParam("id");
-        final Integer transactionId = Integer.valueOf(id);
-        Transaction transaction = transactions.get(transactionId);
-        if (transaction == null) {
-            error(routingContext, 404, "Transaction not found in the DB: " + id);
-        }
-        else {
-            sendTransactionResponse(routingContext, transaction, 200);
-        }
-    }
-
-    /* Post a new transaction */
-    private void newTransaction(RoutingContext routingContext) {
-        try {
-            final Transaction transaction = Json.decodeValue(routingContext.getBodyAsString(), Transaction.class);
-            if (transactions.containsKey(transaction.getId())) {
-                error(routingContext, 409, "Transaction already exists in the DB!");
-            }
-
-            Account fromAccount = accounts.get(transaction.getFromAccount());
-            if (fromAccount == null) {
-                error(routingContext, 404, "Source Account does not exist!");
-            }
-            Account toAccount = accounts.get(transaction.getToAccount());
-            if (toAccount == null) {
-                error(routingContext, 404, "Destination Account does not exist!");
-            }
-            BigDecimal amount = transaction.getAmount();
-            if (amount == null || (amount !=null  && amount.compareTo(BigDecimal.ZERO) <0)) {
-                error(routingContext, 409, "Incorrenct transaction amount!");
-            }
-
-            if(fromAccount != null && toAccount != null && amount.compareTo(BigDecimal.ZERO)>0) {
-                if (fromAccount.getBalance().compareTo(amount) < 0) {
-                    error(routingContext, 409, "Insufficient funds! Unable to process the transfer!");
-                }
-
-                fromAccount.withdraw(amount);
-                toAccount.deposit(amount);
-                transaction.setStatus(TransactionStatus.SUCCESSFUL);
-                transactions.put(transaction.getId(), transaction);
-                sendTransactionResponse(routingContext, transaction, 201);
-            }
-        } catch (RuntimeException exception) {
-            error(routingContext, 415, "Unable to parse Transaction JSON request body! Cause: " + exception.getCause());
-        }
-    }
-
-    /* Get all transactions */
-    private void getAllTransactions(RoutingContext routingContext) {
-        routingContext.response()
-            .putHeader(HttpHeaders.CONTENT_TYPE, JSON_CONTENT_TYPE)
-            .setStatusCode(200)
-            .end(Json.encodePrettily(transactions.values()));
-    }
-
-    /* Send transaction details to the client as a HttpServerResponse */
-    private void sendTransactionResponse(RoutingContext routingContext, Transaction transaction, int statusCode) {
-        routingContext.response()
-            .putHeader(HttpHeaders.CONTENT_TYPE, JSON_CONTENT_TYPE)
-            .setStatusCode(statusCode)
-            .end(Json.encodePrettily(transaction));
-    }
-
-    /* Send account details to the client as a HttpServerResponse */
-    private void sendAccountResponse(RoutingContext routingContext, Account account, int statusCode) {
-        routingContext.response()
-            .putHeader(HttpHeaders.CONTENT_TYPE, JSON_CONTENT_TYPE)
-            .setStatusCode(statusCode)
-            .end(Json.encodePrettily(account));
     }
 
     /* Insert some sample data on server start */
